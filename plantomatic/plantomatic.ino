@@ -2,8 +2,8 @@
     Name    : Plantomatic
     Author  : Lars Almén
     Created : 2017-04-02
-    Last Modified: 2017-04-02
-    Version : 1.0.0
+    Last Modified: 2017-04-10
+    Version : 1.1.0
     Notes   : The software monitors soil moisture levels and controls a pump connected to a relay board
               according to setpoints for wet and dry soil, and maximum pump time.
               It has several other parameters available from the menu to fine-tune control, such as
@@ -26,7 +26,7 @@
               IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
               WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  ***********************************************************************************************************/
- 
+
 #include <LiquidCrystal.h>
 
 // Pin configs
@@ -54,13 +54,15 @@ int maxSampleDelay = 60; // Upper limit of setting delay between samples (second
 int runtimeInterval = 2; // Default interval between starts (minutes)
 int maxRuntimeInterval = 360; // Upper setpoint interval between starts(minutes)
 
-//int pumpRunCycleTime = 10; // Cycling the pump may allow water to distribute more evenly in the soil
-//int pumpDelayCycleTime = 5; // Cycling the pump may allow water to distribute more evenly in the soil
 int pumpRunTime = 20; // Maximum runtime, useful for ex. alarm if the pump does not achieve wet soil in reasonable time (seconds)
 int maxPumpRunTime = 120; // Upper setpoint for pumpRunTime
 
+int currentPumpCycles = 0; // Variable to keep track of pump cycles
+int pumpCycles = 3; // Default no of cycles allowed to achieve correct soil values
+int maxPumpCycles = 30; // Upper setpoint for pump cycles
+
 // Array of strings to display as menu choices
-String menuItems[] = {"Start", "Pump on thresh.", "Pump off thresh.", "Sample delay", "No. samples", "Start interval", "Set pump time"};
+String menuItems[] = {"Start", "Pump on thresh.", "Pump off thresh.", "Sample delay", "No. samples", "Start interval", "Set pump time", "Set pump cycles"};
 
 // Navigation button variables
 int readKey;
@@ -135,7 +137,7 @@ void mainMenuDraw() {
   //Serial.println(menuItems[menuPage]);
   //Serial.println(maxMenuPages);
   //Serial.println(cursorPosition);
-  
+
   lcd.clear();
   lcd.setCursor(1, 0);
   lcd.print(menuItems[menuPage]);
@@ -224,6 +226,9 @@ void operateMainMenu()
             break;
           case 6:
             SetMaxPumpRunTime();
+            break;
+          case 7:
+            SetPumpCycles();
             break;
         }
         activeButton = 1;
@@ -537,29 +542,20 @@ void SetMaxPumpRunTime()
   }
 }
 
-void Start()
+void SetPumpCycles()
 {
   int activeButton = 0;
 
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Prev. sample: ");
+  lcd.print("Max pump cycles");
 
   while (activeButton == 0) {
-    unsigned long currentLoopMillis = millis();
-    if ((currentLoopMillis - previousLoopMillis >= runtimeInterval * 60000) || (previousLoopMillis == 0)) // Check for runtimeinterval or first run.
-    {
-      avgSoil = SampleSoil(sampleDelay, samples);
-      lcd.setCursor(0, 1);
-      lcd.print(avgSoil);
-      Serial.println(avgSoil);
-      Serial.println(dryValue);
-      if (avgSoil >= dryValue)  // If the average soil value is dry
-      {
-        DispenseH2O();
-      }
-      previousLoopMillis = millis();
-    }
+
+    lcd.setCursor(0, 1);
+    lcd.print(pumpCycles);
+    lcd.setCursor(5, 1);
+    lcd.print("cycles.");
 
     int button;
     readKey = analogRead(0);
@@ -569,10 +565,73 @@ void Start()
     }
     button = evaluateButton(readKey);
     switch (button) {
+      case 2:
+        lcd.setCursor(0, 1);
+        lcd.print("   ");
+        pumpCycles = min(pumpCycles + 1, maxPumpCycles);
+        break;
+      case 3:
+        lcd.setCursor(0, 1);
+        lcd.print("   ");
+        pumpCycles = max(pumpCycles - 1, 1);
+        break;
       case 4:  // This case will execute if the "back" button is pressed
         button = 0;
         activeButton = 1;
         break;
+    }
+  }
+}
+
+void Start()
+{
+  int activeButton = 0;
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Prev. sample: ");
+
+  while (activeButton == 0) {
+    if (currentPumpCycles < pumpCycles) // Only do the magic if alarm threshold has not been reached.
+    {
+      unsigned long currentLoopMillis = millis();
+      if ((currentLoopMillis - previousLoopMillis >= runtimeInterval * 60000) || (previousLoopMillis == 0)) // Check for runtimeinterval or first run.
+      {
+        avgSoil = SampleSoil(sampleDelay, samples);
+        lcd.setCursor(0, 1);
+        lcd.print(avgSoil);
+        //Serial.println(avgSoil);
+        //Serial.println(dryValue);
+        if (avgSoil >= dryValue)  // If the average soil value is dry
+        {
+          DispenseH2O();
+        }
+        previousLoopMillis = millis();
+      }
+
+
+      int button;
+      readKey = analogRead(0);
+      if (readKey < 790)
+      {
+        delay(100);
+        readKey = analogRead(0);
+      }
+      button = evaluateButton(readKey);
+      switch (button)
+      {
+        case 4:  // This case will execute if the "back" button is pressed
+          button = 0;
+          activeButton = 1;
+          break;
+      }
+    }
+    else // Display alarm message
+    {
+      lcd.setCursor(0, 0);
+      lcd.print("Alarm! Maximum");
+      lcd.setCursor(0, 1);
+      lcd.print("cycles reached.");
     }
   }
 }
@@ -604,7 +663,9 @@ void DispenseH2O()
   lcd.print("Dispensing H2O.");
 
   unsigned long startMillis = millis();
-  while ((soilValue >= wetValue) && (millis() <= startMillis + (pumpRunTime * 1000))) // While loop to keep watering until the soil is wet or pumpMaxTime is reached.
+  bool pumpRunTimeReached = false;
+
+  while ((soilValue >= wetValue) && !pumpRunTimeReached) // While loop to keep watering until the soil is wet or pumpMaxTime is reached.
   {
     soilValue = analogRead(sensorPin);
     lcd.setCursor(0, 1);
@@ -612,7 +673,20 @@ void DispenseH2O()
     //Serial.println(soilValue);
     delay(50);
     lcd.print("    ");
+
+    // Check if allowable pump runtime has passed.
+    if (millis() >= startMillis + (pumpRunTime * 1000))
+    {
+      currentPumpCycles++;
+      pumpRunTimeReached = true;
+    }
   }
+
+  if (!pumpRunTimeReached) // Check if soil value was reached before pump runtime, in that case, reset cycle counter.
+  {
+    currentPumpCycles = 0;
+  }
+
   digitalWrite(pumpPin, LOW); // Stop pump
   digitalWrite(sensorPowerPin, LOW); // Sensor off
   avgSoil = soilValue;  // Resets average soil value
